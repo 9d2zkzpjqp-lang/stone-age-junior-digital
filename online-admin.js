@@ -1,0 +1,24 @@
+import {db,configured,rpc,esc} from './online-common.js';
+const app=document.getElementById('admin');let authenticated=false,rooms=[],message='',busy=false;
+function notice(e){message=e?.message||String(e);render();}
+function render(){
+ if(!configured){app.innerHTML='<section class="panel"><h1>Lehrkraftbereich</h1><p>Supabase ist noch nicht eingerichtet. Trage die Zugangsdaten in <code>config.js</code> ein und folge der README.</p><p><a class="btn" href="demo-admin.html">Lokale Demo öffnen</a></p></section>';return;}
+ if(!authenticated){app.innerHTML=`<section class="panel" style="max-width:550px;margin:auto"><h1>🔒 Lehrkraft-Anmeldung</h1><p>Nur die Lehrkraft benötigt ein Konto. Schülerinnen und Schüler treten anonym über die Gruppen-ID bei.</p><form id="login" class="formline"><label>E-Mail<input class="field" id="email" type="email" required autocomplete="username"></label><label>Passwort<input class="field" id="password" type="password" required autocomplete="current-password"></label><button class="btn" type="submit">Anmelden</button></form>${message?`<p class="warning">${esc(message)}</p>`:''}</section>`;return;}
+ app.innerHTML=`<section class="panel"><div class="game-head"><div><h1>🏕️ Gruppen verwalten</h1><p class="muted">Gruppen anlegen, zurücksetzen oder löschen. Keine Live-Überwachung.</p></div><button class="btn lite small" id="logout">Abmelden</button></div>${message?`<p class="warning">${esc(message)}</p>`:''}<hr class="sep"><h2>Neue Gruppen</h2><form id="create" class="formline"><label>Anzahl<input id="count" class="field" type="number" min="1" max="20" value="4" required></label><label>Spieler pro Gruppe<select id="capacity" class="field"><option value="2">2</option><option value="3">3</option><option value="4" selected>4</option></select></label><button class="btn" type="submit" ${busy?'disabled':''}>+ Erstellen</button></form><h2>Spielgruppen <span class="badge">${rooms.length}</span></h2><div class="room-list">${rooms.length?rooms.map(r=>`<div class="room-row"><div><strong>${esc(r.code)}</strong><small>${r.players}/${r.capacity} Plätze · ${r.status==='waiting'?'Wartet':r.status==='playing'?'Spielt':'Beendet'}</small></div><div class="room-buttons"><button class="btn small" data-copy="${esc(r.code)}">ID kopieren</button><button class="btn alt small" data-reset="${esc(r.code)}">↺ Zurücksetzen</button><button class="btn danger small" data-delete="${esc(r.code)}">Löschen</button></div></div>`).join(''):'<p>Noch keine Gruppen vorhanden.</p>'}</div>${rooms.length?'<button class="btn danger" id="reset-all">Alle Gruppen zurücksetzen</button>':''}<p class="help">Zurücksetzen behält die Gruppen-ID und löscht Spielstand sowie Spielerplätze. Löschen entfernt die Gruppe vollständig.</p></section>`;
+}
+async function list(){const r=await rpc('saj_admin_rooms');if(!Array.isArray(r))throw Error('Dein Konto besitzt noch keine Lehrkraftberechtigung. Siehe README.');rooms=r;message='';render();}
+async function login(){const {data:{session}}=await db.auth.getSession();if(!session){authenticated=false;render();return;}const isAdmin=await rpc('saj_is_admin');authenticated=!!isAdmin;if(authenticated)await list();else{await db.auth.signOut();notice(Error('Keine Lehrkraftberechtigung. Bitte das Lehrkraft-Freischaltskript im SQL Editor ausführen.'));}}
+app.addEventListener('submit',async ev=>{ev.preventDefault();if(busy)return;busy=true;
+ try{if(ev.target.id==='login'){const email=app.querySelector('#email').value.trim(),password=app.querySelector('#password').value;const {error}=await db.auth.signInWithPassword({email,password});if(error)throw error;await login();}
+ if(ev.target.id==='create'){const n=Number(app.querySelector('#count').value),capacity=Number(app.querySelector('#capacity').value);if(n<1||n>20||capacity<2||capacity>4)throw Error('Ungültige Gruppengröße');for(let i=0;i<n;i++)await rpc('saj_create_room',{p_capacity:capacity});await list();}}
+ catch(e){notice(e);}finally{busy=false;}
+});
+app.addEventListener('click',async ev=>{const b=ev.target.closest('button');if(!b||busy)return;
+ if(b.dataset.copy){const link=new URL(`index.html?gruppe=${encodeURIComponent(b.dataset.copy)}`,location.href).href;try{await navigator.clipboard.writeText(link);message='Gruppenlink kopiert.';}catch{message=`Link: ${link}`;}render();return;}
+ if(b.id==='logout'){busy=true;await db.auth.signOut();authenticated=false;busy=false;render();return;}
+ const code=b.dataset.reset||b.dataset.delete;const all=b.id==='reset-all';
+ if(!code&&!all)return;
+ if(!confirm(all?'Alle Gruppen zurücksetzen? Alle Spieler und Spielstände werden gelöscht.':b.dataset.delete?`${code} endgültig löschen?`:`${code} zurücksetzen?`))return;
+ busy=true;try{await rpc(all?'saj_reset_all':b.dataset.delete?'saj_delete':'saj_reset',all?{}:{p_code:code});await list();}catch(e){notice(e);}finally{busy=false;}
+});
+if(!configured)render();else login().catch(e=>notice(e));
